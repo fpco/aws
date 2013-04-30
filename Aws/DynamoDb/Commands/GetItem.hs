@@ -23,20 +23,26 @@ data GetItem
       , giAttributesToGet :: [T.Text]
       , giConsistentRead :: Maybe Bool
       , giReturnConsumedCapacity :: Maybe T.Text
+      , giResponseContentType :: Maybe T.Text
+      , giResponseContentLanguage :: Maybe T.Text
+      , giResponseExpires :: Maybe T.Text
+      , giResponseCacheControl :: Maybe T.Text
+      , giResponseContentDisposition :: Maybe T.Text
+      , giResponseContentEncoding :: Maybe T.Text
+      , giResponseContentRange :: Maybe (Int,Int)
       }
   deriving (Show)
 
 getItem :: Map T.Text AttributeValue -> T.Text -> GetItem
-getItem ks tn = GetItem ks tn [] Nothing Nothing
+getItem ks tn = GetItem ks tn [] Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
 data GetItemResponse
     = GetItemResponse {
-        girMetadata :: ObjectMetadata,
         girResponse :: HTTP.Response (C.ResumableSource (ResourceT IO) B8.ByteString)
       }
 
 data GetItemMemoryResponse
-    = GetItemMemoryResponse ObjectMetadata (HTTP.Response L.ByteString)
+    = GetItemMemoryResponse (HTTP.Response L.ByteString)
     deriving (Show)
 
 -- | ServiceConfiguration: 'DynamoDbConfiguration'
@@ -44,11 +50,7 @@ instance SignQuery GetItem where
     type ServiceConfiguration GetItem = DynamoDbConfiguration
     signQuery GetItem {..} = ddbSignQuery DynamoDbQuery {
                                    ddbQMethod = Get
-                                 , ddbQBucket = Just $ T.encodeUtf8 giBucket
-                                 , ddbQObject = Just $ T.encodeUtf8 giObjectName
-                                 , ddbQSubresources = HTTP.toQuery [
-                                                       ("versionId" :: B8.ByteString,) <$> giVersionId
-                                                     ]
+                                 , ddbQSubresources = []
                                  , ddbQQuery = HTTP.toQuery [
                                                 ("response-content-type" :: B8.ByteString,) <$> giResponseContentType
                                               , ("response-content-language",) <$> giResponseContentLanguage
@@ -71,11 +73,10 @@ instance ResponseConsumer GetItem GetItemResponse where
     type ResponseMetadata GetItemResponse = DynamoDbMetadata
     responseConsumer GetItem{..} metadata resp
         = do rsp <- ddbBinaryResponseConsumer return metadata resp
-             om <- parseObjectMetadata (HTTP.responseHeaders resp)
-             return $ GetItemResponse om rsp
+             return $ GetItemResponse rsp
 
 instance Transaction GetItem GetItemResponse
 
 instance AsMemoryResponse GetItemResponse where
     type MemoryResponse GetItemResponse = GetItemMemoryResponse
-    loadToMemory (GetItemResponse om x) = GetItemMemoryResponse om <$> HTTP.lbsResponse x
+    loadToMemory (GetItemResponse x) = GetItemMemoryResponse <$> HTTP.lbsResponse x

@@ -40,17 +40,10 @@ data DynamoDbAuthorization
     | DynamoDbAuthorizationQuery
     deriving (Show)
 
-data RequestStyle
-    = PathStyle -- ^ Requires correctly setting region endpoint, but allows non-DNS compliant bucket names in the US standard region.
-    | BucketStyle -- ^ Bucket name must be DNS compliant.
-    | VHostStyle
-    deriving (Show)
-
 data DynamoDbConfiguration qt
     = DynamoDbConfiguration {
         ddbProtocol :: Protocol
       , ddbEndpoint :: B.ByteString
-      , ddbRequestStyle :: RequestStyle
       , ddbPort :: Int
       , ddbUseUri :: Bool
       , ddbDefaultExpiry :: NominalDiffTime
@@ -89,7 +82,6 @@ ddb protocol endpoint uri
     = DynamoDbConfiguration { 
          ddbProtocol = protocol
        , ddbEndpoint = endpoint
-       , ddbRequestStyle = BucketStyle
        , ddbPort = defaultPort protocol
        , ddbUseUri = uri
        , ddbDefaultExpiry = 15*60
@@ -131,8 +123,6 @@ instance Loggable DynamoDbMetadata where
 data DynamoDbQuery
     = DynamoDbQuery {
         ddbQMethod :: Method
-      , ddbQBucket :: Maybe B.ByteString
-      , ddbQObject :: Maybe B.ByteString
       , ddbQSubresources :: HTTP.Query
       , ddbQQuery :: HTTP.Query
       , ddbQContentType :: Maybe B.ByteString
@@ -145,7 +135,6 @@ data DynamoDbQuery
 instance Show DynamoDbQuery where
     show DynamoDbQuery{..} = "DynamoDbQuery [" ++
                        " method: " ++ show ddbQMethod ++
-                       " ; bucket: " ++ show ddbQBucket ++
                        " ; subresources: " ++ show ddbQSubresources ++
                        " ; query: " ++ show ddbQQuery ++
                        " ; request body: " ++ (case ddbQRequestBody of Nothing -> "no"; _ -> "yes") ++
@@ -175,14 +164,10 @@ ddbSignQuery DynamoDbQuery{..} DynamoDbConfiguration{..} SignatureData{..}
                                                  | otherwise = x1 : merge (x2 : xs)
                 merge xs = xs
 
-      (host, path) = case ddbRequestStyle of
-                       PathStyle   -> ([Just ddbEndpoint], [Just "/", fmap (`B8.snoc` '/') ddbQBucket, ddbQObject])
-                       BucketStyle -> ([ddbQBucket, Just ddbEndpoint], [Just "/", ddbQObject])
-                       VHostStyle  -> ([Just $ fromMaybe ddbEndpoint ddbQBucket], [Just "/", ddbQObject])
+      -- (host, path) = B.span (/=fromIntegral '/') ddbEndpoint
+      (host, path) = ([], [])
       sortedSubresources = sort ddbQSubresources
       canonicalizedResource = Blaze8.fromChar '/' `mappend`
-                              maybe mempty (\s -> Blaze.copyByteString s `mappend` Blaze8.fromChar '/') ddbQBucket `mappend`
-                              maybe mempty Blaze.copyByteString ddbQObject `mappend`
                               HTTP.renderQueryBuilder True sortedSubresources
       ti = case (ddbUseUri, signatureTimeInfo) of
              (False, ti') -> ti'
@@ -298,8 +283,6 @@ data CannedAcl
     | AclPublicRead
     | AclPublicReadWrite
     | AclAuthenticatedRead
-    | AclBucketOwnerRead
-    | AclBucketOwnerFullControl
     | AclLogDeliveryWrite
     deriving (Show)
 
@@ -308,8 +291,6 @@ writeCannedAcl AclPrivate                = "private"
 writeCannedAcl AclPublicRead             = "public-read"
 writeCannedAcl AclPublicReadWrite        = "public-read-write"
 writeCannedAcl AclAuthenticatedRead      = "authenticated-read"
-writeCannedAcl AclBucketOwnerRead        = "bucket-owner-read"
-writeCannedAcl AclBucketOwnerFullControl = "bucket-owner-full-control"
 writeCannedAcl AclLogDeliveryWrite       = "log-delivery-write"
 
 data StorageClass
@@ -325,103 +306,6 @@ parseStorageClass s = F.failure . XmlException $ "Invalid Storage Class: " ++ T.
 writeStorageClass :: StorageClass -> T.Text
 writeStorageClass Standard          = "STANDARD"
 writeStorageClass ReducedRedundancy = "REDUCED_REDUNDANCY"
-
-type Bucket = T.Text
-
-data BucketInfo
-    = BucketInfo {
-        bucketName         :: Bucket
-      , bucketCreationDate :: UTCTime
-      }
-    deriving (Show)
-
-type Object = T.Text
-
-data ObjectId
-    = ObjectId {
-        oidBucket :: Bucket
-      , oidObject :: Object
-      , oidVersion :: Maybe T.Text
-      }
-    deriving (Show)
-
-data ObjectInfo
-    = ObjectInfo {
-        objectKey          :: T.Text
-      , objectLastModified :: UTCTime
-      , objectETag         :: T.Text
-      , objectSize         :: Integer
-      , objectStorageClass :: StorageClass
-      , objectOwner        :: UserInfo
-      }
-    deriving (Show)
-
-parseObjectInfo :: F.Failure XmlException m => Cu.Cursor -> m ObjectInfo
-parseObjectInfo el
-    = do key <- force "Missing object Key" $ el $/ elContent "Key"
-         let time s = case parseTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S%QZ" $ T.unpack s of
-                        Nothing -> F.failure $ XmlException "Invalid time"
-                        Just v -> return v
-         lastModified <- forceM "Missing object LastModified" $ el $/ elContent "LastModified" &| time
-         eTag <- force "Missing object ETag" $ el $/ elContent "ETag"
-         size <- forceM "Missing object Size" $ el $/ elContent "Size" &| textReadInt
-         storageClass <- forceM "Missing object StorageClass" $ el $/ elContent "StorageClass" &| parseStorageClass
-         owner <- forceM "Missing object Owner" $ el $/ Cu.laxElement "Owner" &| parseUserInfo
-         return ObjectInfo{
-                      objectKey          = key
-                    , objectLastModified = lastModified
-                    , objectETag         = eTag
-                    , objectSize         = size
-                    , objectStorageClass = storageClass
-                    , objectOwner        = owner
-                    }
-
-data ObjectMetadata
-    = ObjectMetadata {
-        omDeleteMarker         :: Bool
-      , omETag                 :: T.Text
-      , omLastModified         :: UTCTime
-      , omVersionId            :: Maybe T.Text
--- TODO:
---      , omExpiration           :: Maybe (UTCTime, T.Text)
-      , omUserMetadata         :: [(T.Text, T.Text)]
-      , omMissingUserMetadata  :: Maybe T.Text
-      , omServerSideEncryption :: Maybe T.Text
-      }
-    deriving (Show)
-
-parseObjectMetadata :: F.Failure HeaderException m => HTTP.ResponseHeaders -> m ObjectMetadata
-parseObjectMetadata h = ObjectMetadata
-                        `liftM` deleteMarker
-                        `ap` etag
-                        `ap` lastModified
-                        `ap` return versionId
---                        `ap` expiration
-                        `ap` return userMetadata
-                        `ap` return missingUserMetadata
-                        `ap` return serverSideEncryption
-  where deleteMarker = case B8.unpack `fmap` lookup "x-amz-delete-marker" h of
-                         Nothing -> return False
-                         Just "true" -> return True
-                         Just "false" -> return False
-                         Just x -> F.failure $ HeaderException ("Invalid x-amz-delete-marker " ++ x)
-        etag = case T.decodeUtf8 `fmap` lookup "ETag" h of
-                 Just x -> return x
-                 Nothing -> F.failure $ HeaderException "ETag missing"
-        lastModified = case B8.unpack `fmap` lookup "Last-Modified" h of
-                         Just ts -> case parseHttpDate ts of
-                                      Just t -> return t
-                                      Nothing -> F.failure $ HeaderException ("Invalid Last-Modified: " ++ ts)
-                         Nothing -> F.failure $ HeaderException "Last-Modified missing"
-        versionId = T.decodeUtf8 `fmap` lookup "x-amz-version-id" h
-        -- expiration = return undefined
-        userMetadata = flip mapMaybe ht $
-                       \(k, v) -> do i <- T.stripPrefix "x-amz-meta-" k
-                                     return (i, v)
-        missingUserMetadata = T.decodeUtf8 `fmap` lookup "x-amz-missing-meta" h
-        serverSideEncryption = T.decodeUtf8 `fmap` lookup "x-amz-server-side-encryption" h
-
-        ht = map ((T.decodeUtf8 . CI.foldedCase) *** T.decodeUtf8) h
 
 type LocationConstraint = T.Text
 

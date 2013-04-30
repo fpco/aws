@@ -38,6 +38,7 @@ Library
                        Aws.DynamoDb,
                        Aws.DynamoDb.Commands,
                        Aws.DynamoDb.Commands.GetItem,
+                       Aws.DynamoDb.Core,
                        Aws.Ec2.InstanceMetadata,
                        Aws.S3,
                        Aws.S3.Commands,
