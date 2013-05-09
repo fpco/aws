@@ -68,11 +68,18 @@ Library
                        Aws.Ses.Commands.VerifyEmailIdentity,
                        Aws.Ses.Commands.DeleteIdentity,
                        Aws.Ses.Core
+                       Aws.DynamoDb
+                       Aws.DynamoDb.Core
+                       Aws.DynamoDb.Commands
+                       Aws.DynamoDb.Commands.GetItem
+                       Aws.DynamoDb.Commands.PutItem
+                       Aws.DynamoDb.Commands.UpdateItem
 
   Build-depends:
                        attempt              >= 0.3.1.1 && < 0.5,
                        base                 == 4.*,
                        base64-bytestring    == 1.0.*,
+                       base16-bytestring    == 0.1.*,
                        blaze-builder        >= 0.2.1.4 && < 0.4,
                        bytestring           >= 0.9     && < 0.11,
                        case-insensitive     >= 0.2     && < 1.1,
@@ -80,7 +87,7 @@ Library
                        conduit              >= 0.5     && < 1.1,
                        containers           >= 0.4,
                        crypto-api           >= 0.9,
-                       cryptohash           >= 0.6     && < 0.9,
+                       cryptohash           >= 0.8     && < 0.9,
                        directory            >= 1.0     && < 1.3,
                        failure              >= 0.2.0.1 && < 0.3,
                        filepath             >= 1.1     && < 1.4,
@@ -95,7 +102,11 @@ Library
                        time                 >= 1.1.4   && < 1.5,
                        transformers         >= 0.2.2.0 && < 0.4,
                        utf8-string          == 0.3.*,
-                       xml-conduit          >= 1.0.1 && <1.2
+                       xml-conduit          >= 1.0.1 && <1.2,
+                       safe                 >= 0.3 && < 0.4,
+                       attoparsec-conduit   >= 0.5 && < 1.1,
+                       aeson                >= 0.6 && < 0.7,
+                       data-default
 
   GHC-Options: -Wall
 
@@ -143,5 +154,22 @@ Executable SimpleDb
                        base == 4.*,
                        aws,
                        text >=0.11
+
+  Default-Language: Haskell2010
+
+
+Executable DynamoDb
+  Main-is: DynamoDb.hs
+  Hs-source-dirs: Examples
+
+  if !flag(Examples)
+    Buildable: False
+  else
+    Buildable: True
+    Build-depends:
+                       base == 4.*,
+                       aws,
+                       text >=0.11,
+                       data-default
 
   Default-Language: Haskell2010
