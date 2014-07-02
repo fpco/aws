@@ -94,6 +94,7 @@ Library
                        Aws.Ses.Commands.SetIdentityFeedbackForwardingEnabled,
                        Aws.Ses.Core,
                        Aws.DynamoDb.Commands,
+                       Aws.DynamoDb.Commands.Item,
                        Aws.DynamoDb.Commands.Table,
                        Aws.DynamoDb.Core
 
