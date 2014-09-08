@@ -7,6 +7,17 @@
 {-# LANGUAGE RecordWildCards           #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
 {-# LANGUAGE TypeFamilies              #-}
+-----------------------------------------------------------------------------
+-- |
+-- Module      :  Aws.DynamoDb.Commands.UpdateItem
+-- Copyright   :  Soostone Inc
+-- License     :  BSD3
+--
+-- Maintainer  :  Ozgun Ataman <ozgun.ataman@soostone.com>
+-- Stability   :  experimental
+--
+--
+----------------------------------------------------------------------------
 
 module Aws.DynamoDb.Commands.UpdateItem where
 
@@ -26,77 +37,91 @@ data UpdateItem = UpdateItem {
       uiTable   :: T.Text
     , uiKey     :: PrimaryKey
     , uiUpdates :: [AttributeUpdate]
-    , uiExpect  :: [Expect]
+    , uiExpect  :: Conditions
+    -- ^ Conditional update - see DynamoDb documentation
     , uiReturn  :: UpdateReturn
+    , uiRetCons :: ReturnConsumption
+    , uiRetMet  :: ReturnItemCollectionMetrics
     } deriving (Eq,Show,Read,Ord)
+
+
+-------------------------------------------------------------------------------
+-- | Construct a minimal 'UpdateItem' request.
+updateItem
+    :: T.Text                   -- ^ Table name
+    -> PrimaryKey               -- ^ Primary key for item
+    -> [AttributeUpdate]        -- ^ Updates for this item
+    -> UpdateItem
+updateItem tn key ups = UpdateItem tn key ups def def def def
 
 
 type AttributeUpdates = [AttributeUpdate]
 
 
 data AttributeUpdate = AttributeUpdate {
-      auName   :: T.Text
-    -- ^ Attribute name
-    , auValue  :: DValue
-    -- ^ Attribute value
+      auAttr   :: Attribute
+    -- ^ Attribute key-value
     , auAction :: UpdateAction
     -- ^ Type of update operation.
     } deriving (Eq,Show,Read,Ord)
 
 
+instance DynSize AttributeUpdate where
+    dynSize (AttributeUpdate a _) = dynSize a
+
+-------------------------------------------------------------------------------
+-- | Shorthand for the 'AttributeUpdate' constructor. Defaults to PUT
+-- for the update action.
+au :: Attribute -> AttributeUpdate
+au a = AttributeUpdate a def
+
+
 instance ToJSON AttributeUpdates where
     toJSON = object . map mk
         where
-          mk AttributeUpdate{..} = auName .= object ["Value" .= auValue, "Action" .= auAction]
+          mk AttributeUpdate{..} = (attrName auAttr) .= object
+            ["Value" .= (attrVal auAttr), "Action" .= auAction]
 
 
-data UpdateAction = UPut | UAdd | UDelete
+-------------------------------------------------------------------------------
+-- | Type of attribute update to perform.
+--
+-- See AWS docs at:
+--
+-- @http:\/\/docs.aws.amazon.com\/amazondynamodb\/latest\/APIReference\/API_UpdateItem.html@
+data UpdateAction
+    = UPut                      -- ^ Simpley write, overwriting any previous value
+    | UAdd                      -- ^ Numerical add or add to set.
+    | UDelete                   -- ^ Empty value: remove; Set value: Subtract from set.
     deriving (Eq,Show,Read,Ord)
 
 
 instance ToJSON UpdateAction where
-    toJSON UPut = toJSON ("PUT" :: T.Text)
-    toJSON UAdd = toJSON ("ADD" :: T.Text)
-    toJSON UDelete = toJSON ("DELETE" :: T.Text)
+    toJSON UPut = String "PUT"
+    toJSON UAdd = String "ADD"
+    toJSON UDelete = String "DELETE"
 
 
 instance Default UpdateAction where
     def = UPut
 
 
-data UpdateReturn = URNone | URAllOld | URUpdatedOld | URAllNew | URUpdatedNew
-    deriving (Eq,Show,Read,Ord)
-
-
-instance Default UpdateReturn where
-    def = URNone
-
-
-instance ToJSON UpdateReturn where
-    toJSON URNone = toJSON ("NONE" :: T.Text)
-    toJSON URAllOld = toJSON ("ALL_OLD" :: T.Text)
-    toJSON URUpdatedOld = toJSON ("UPDATED_OLD" :: T.Text)
-    toJSON URAllNew = toJSON ("ALL_NEW" :: T.Text)
-    toJSON URUpdatedNew = toJSON ("UPDATED_NEW" :: T.Text)
-
-
 instance ToJSON UpdateItem where
     toJSON UpdateItem{..} =
-        let expect = if (uiExpect == [])
-                     then []
-                     else ["Expected" .= uiExpect]
-        in object $ expect ++
+        object $ expectsJson uiExpect ++
           [ "TableName" .= uiTable
           , "Key" .= uiKey
           , "AttributeUpdates" .= uiUpdates
           , "ReturnValues" .= uiReturn
+          , "ReturnConsumedCapacity" .= uiRetCons
+          , "ReturnItemCollectionMetrics" .= uiRetMet
           ]
 
 
 data UpdateItemResponse = UpdateItemResponse {
       uirAttrs    :: Maybe Item
     -- ^ Old attributes, if requested
-    , uirConsumed :: Double
+    , uirConsumed :: Maybe ConsumedCapacity
     -- ^ Amount of capacity consumed
     } deriving (Eq,Show,Read,Ord)
 
@@ -107,19 +132,19 @@ instance Transaction UpdateItem UpdateItemResponse
 
 instance SignQuery UpdateItem where
     type ServiceConfiguration UpdateItem = DdbConfiguration
-    signQuery gi = ddbSignQuery gi "UpdateItem"
+    signQuery gi = ddbSignQuery "UpdateItem" gi
 
 
 instance FromJSON UpdateItemResponse where
     parseJSON (Object v) = UpdateItemResponse
         <$> v .:? "Attributes"
-        <*> v .: "ConsumedCapacityUnits"
+        <*> v .:? "ConsumedCapacity"
     parseJSON _ = fail "UpdateItemResponse expected a JSON object"
 
 
 instance ResponseConsumer r UpdateItemResponse where
     type ResponseMetadata UpdateItemResponse = DdbResponse
-    responseConsumer rq ref resp = ddbResponseConsumer ref resp
+    responseConsumer _ ref resp = ddbResponseConsumer ref resp
 
 
 instance AsMemoryResponse UpdateItemResponse where

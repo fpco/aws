@@ -33,7 +33,6 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans
 import           Control.Monad.Trans.Resource
-import           Data.Attempt         (Attempt(Success, Failure))
 import qualified Data.ByteString      as B
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Conduit         as C
@@ -80,13 +79,14 @@ data Configuration
 -- (see 'loadCredentialsDefault').
 baseConfiguration :: MonadIO io => io Configuration
 baseConfiguration = liftIO $ do
-  Just cr <- loadCredentialsDefault
-  return Configuration {
+  cr <- loadCredentialsDefault
+  case cr of
+    Nothing -> E.throw $ NoCredentialsException "could not locate aws credentials"
+    Just cr' -> return Configuration {
                       timeInfo = Timestamp
-                    , credentials = cr
+                    , credentials = cr'
                     , logger = defaultLog Warning
                     }
--- TODO: better error handling when credentials cannot be loaded
 
 -- | Debug configuration, which logs much more verbosely.
 dbgConfiguration :: MonadIO io => io Configuration
@@ -185,11 +185,8 @@ unsafeAws
 unsafeAws cfg scfg manager request = do
   metadataRef <- liftIO $ newIORef mempty
 
-  let catchAll :: ResourceT IO a -> ResourceT IO (Attempt a)
-      catchAll = E.handle (return . failure') . fmap Success
-
-      failure' :: E.SomeException -> Attempt a
-      failure' = Failure
+  let catchAll :: ResourceT IO a -> ResourceT IO (Either E.SomeException a)
+      catchAll = E.handle (return . Left) . fmap Right
 
   resp <- catchAll $
             unsafeAwsRef cfg scfg manager metadataRef request
@@ -212,15 +209,21 @@ unsafeAwsRef
 unsafeAwsRef cfg info manager metadataRef request = do
   sd <- liftIO $ signatureData <$> timeInfo <*> credentials $ cfg
   let q = signQuery request info sd
-  liftIO $ logger cfg Debug $ T.pack $ "String to sign: " ++ show (sqStringToSign q)
-  let httpRequest = queryToHttpRequest q
-  liftIO $ logger cfg Debug $ T.pack $ "Host: " ++ show (HTTP.host httpRequest)
-  resp <- do
-      hresp <- HTTP.http httpRequest manager
-      forM_ (HTTP.responseHeaders hresp) $ \(hname,hvalue) -> liftIO $ do
-        logger cfg Debug $ T.decodeUtf8 $ "Response header '" `mappend` CI.original hname `mappend` "': '" `mappend` hvalue `mappend` "'"
-      responseConsumer request metadataRef hresp
-  return resp
+  let logDebug = liftIO . logger cfg Debug . T.pack
+  logDebug $ "String to sign: " ++ show (sqStringToSign q)
+  httpRequest <- liftIO $ queryToHttpRequest q
+  logDebug $ "Host: " ++ show (HTTP.host httpRequest)
+  logDebug $ "Path: " ++ show (HTTP.path httpRequest)
+  logDebug $ "Query string: " ++ show (HTTP.queryString httpRequest)
+  case HTTP.requestBody httpRequest of
+    HTTP.RequestBodyLBS lbs -> logDebug $ "Body: " ++ show lbs
+    HTTP.RequestBodyBS bs -> logDebug $ "Body: " ++ show bs
+    _ -> return ()
+  hresp <- HTTP.http httpRequest manager
+  logDebug $ "Response status: " ++ show (HTTP.responseStatus hresp)
+  forM_ (HTTP.responseHeaders hresp) $ \(hname,hvalue) -> liftIO $
+    logger cfg Debug $ T.decodeUtf8 $ "Response header '" `mappend` CI.original hname `mappend` "': '" `mappend` hvalue `mappend` "'"
+  responseConsumer request metadataRef hresp
 
 -- | Run a URI-only AWS transaction. Returns a URI that can be sent anywhere. Does not work with all requests.
 -- 
@@ -263,17 +266,13 @@ awsIteratedSource :: (IteratedTransaction r a)
                      -> ServiceConfiguration r NormalQuery
                      -> HTTP.Manager
                      -> r
-#if MIN_VERSION_conduit(1, 0, 0)
                      -> C.Producer (ResourceT IO) (Response (ResponseMetadata a) a)
-#else
-                     -> C.GSource (ResourceT IO) (Response (ResponseMetadata a) a)
-#endif
 awsIteratedSource cfg scfg manager req_ = go req_
   where go request = do resp <- lift $ aws cfg scfg manager request
                         C.yield resp
                         case responseResult resp of
-                          Failure _ -> return ()
-                          Success x ->
+                          Left _  -> return ()
+                          Right x ->
                             case nextIteratedRequest request x of
                               Nothing -> return ()
                               Just nextRequest -> go nextRequest
@@ -283,16 +282,8 @@ awsIteratedList :: (IteratedTransaction r a, ListResponse a i)
                      -> ServiceConfiguration r NormalQuery
                      -> HTTP.Manager
                      -> r
-#if MIN_VERSION_conduit(1, 0, 0)
                      -> C.Producer (ResourceT IO) i
-#else
-                     -> C.GSource (ResourceT IO) i
-#endif
 awsIteratedList cfg scfg manager req
   = awsIteratedSource cfg scfg manager req
-#if MIN_VERSION_conduit(1, 0, 0)
     C.=$=
-#else
-    C.>+>
-#endif
     CL.concatMapM (fmap listResponse . readResponseIO)

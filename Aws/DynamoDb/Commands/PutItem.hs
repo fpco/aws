@@ -7,12 +7,24 @@
 {-# LANGUAGE RecordWildCards           #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
 {-# LANGUAGE TypeFamilies              #-}
+-----------------------------------------------------------------------------
+-- |
+-- Module      :  Aws.DynamoDb.Commands.GetItem
+-- Copyright   :  Soostone Inc
+-- License     :  BSD3
+--
+-- Maintainer  :  Ozgun Ataman <ozgun.ataman@soostone.com>
+-- Stability   :  experimental
+--
+-- @http:\/\/docs.aws.amazon.com\/amazondynamodb\/latest\/APIReference\/API_PutItem.html@
+----------------------------------------------------------------------------
 
 module Aws.DynamoDb.Commands.PutItem where
 
 -------------------------------------------------------------------------------
 import           Control.Applicative
 import           Data.Aeson
+import           Data.Default
 import qualified Data.Text           as T
 -------------------------------------------------------------------------------
 import           Aws.Core
@@ -21,57 +33,49 @@ import           Aws.DynamoDb.Core
 
 
 data PutItem = PutItem {
-      piTable  :: T.Text
+      piTable   :: T.Text
     -- ^ Target table
-    , piItem   :: Item
-    -- ^ An item to Put
-    , piExpect :: [Expect]
+    , piItem    :: Item
+    -- ^ An item to Put. Attributes here will replace what maybe under
+    -- the key on DDB.
+    , piExpect  :: Conditions
     -- ^ (Possible) set of expections for a conditional Put
-    , piReturn :: PutReturn
+    , piReturn  :: UpdateReturn
     -- ^ What to return from this query.
+    , piRetCons :: ReturnConsumption
+    , piRetMet  :: ReturnItemCollectionMetrics
     } deriving (Eq,Show,Read,Ord)
 
 
-
--- | A simple starting point for a 'PutItem' request.
---
--- It sets 'piExpect' to 'Nothing' and 'piReturn' to 'RNone'.
+-------------------------------------------------------------------------------
+-- | Construct a minimal 'PutItem' request.
 putItem :: T.Text
         -- ^ A Dynamo table name
         -> Item
         -- ^ Item to be saved
         -> PutItem
-putItem tn it = PutItem tn it [] RNone
+putItem tn it = PutItem tn it def def def def
 
 
 instance ToJSON PutItem where
     toJSON PutItem{..} =
-        let exp = if (piExpect == [])
-                    then []
-                    else ["Expected" .= piExpect]
-        in object $ exp ++
+        object $ expectsJson piExpect ++
           [ "TableName" .= piTable
           , "Item" .= piItem
           , "ReturnValues" .= piReturn
+          , "ReturnConsumedCapacity" .= piRetCons
+          , "ReturnItemCollectionMetrics" .= piRetMet
           ]
-
-
-
-data PutReturn = RNone | RAll
-    deriving (Eq,Show,Read,Ord)
-
-
-instance ToJSON PutReturn where
-    toJSON RNone = toJSON ("NONE" :: T.Text)
-    toJSON RAll = toJSON ("ALL_OLD" :: T.Text)
 
 
 
 data PutItemResponse = PutItemResponse {
       pirAttrs    :: Maybe Item
     -- ^ Old attributes, if requested
-    , pirConsumed :: Double
+    , pirConsumed :: Maybe ConsumedCapacity
     -- ^ Amount of capacity consumed
+    , pirColMet   :: Maybe ItemCollectionMetrics
+    -- ^ Collection metrics if they have been requested.
     } deriving (Eq,Show,Read,Ord)
 
 
@@ -81,18 +85,20 @@ instance Transaction PutItem PutItemResponse
 
 instance SignQuery PutItem where
     type ServiceConfiguration PutItem = DdbConfiguration
-    signQuery gi = ddbSignQuery gi "PutItem"
+    signQuery gi = ddbSignQuery "PutItem" gi
 
 
 instance FromJSON PutItemResponse where
     parseJSON (Object v) = PutItemResponse
         <$> v .:? "Attributes"
-        <*> v .: "ConsumedCapacityUnits"
+        <*> v .:? "ConsumedCapacity"
+        <*> v .:? "ItemCollectionMetrics"
+    parseJSON _ = fail "PutItemResponse must be an object."
 
 
 instance ResponseConsumer r PutItemResponse where
     type ResponseMetadata PutItemResponse = DdbResponse
-    responseConsumer rq ref resp = ddbResponseConsumer ref resp
+    responseConsumer _ ref resp = ddbResponseConsumer ref resp
 
 
 instance AsMemoryResponse PutItemResponse where

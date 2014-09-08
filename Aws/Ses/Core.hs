@@ -22,8 +22,8 @@ import           Aws.Core
 import qualified Blaze.ByteString.Builder       as Blaze
 import qualified Blaze.ByteString.Builder.Char8 as Blaze8
 import qualified Control.Exception              as C
-import qualified Control.Failure                as F
 import           Control.Monad                  (mplus)
+import           Control.Monad.Trans.Resource   (throwM)
 import qualified Data.ByteString                as B
 import qualified Data.ByteString.Base64         as B64
 import           Data.ByteString.Char8          ({-IsString-})
@@ -97,7 +97,7 @@ sesSignQuery query si sd
       , sqAuthorization = Nothing
       , sqContentType   = Nothing
       , sqContentMd5    = Nothing
-      , sqAmzHeaders    = [("X-Amzn-Authorization", authorization)]
+      , sqAmzHeaders    = amzHeaders
       , sqOtherHeaders  = []
       , sqBody          = Nothing
       , sqStringToSign  = stringToSign
@@ -106,11 +106,16 @@ sesSignQuery query si sd
       stringToSign  = fmtRfc822Time (signatureTime sd)
       credentials   = signatureCredentials sd
       accessKeyId   = accessKeyID credentials
-      authorization = B.concat [ "AWS3-HTTPS AWSAccessKeyId="
-                               , accessKeyId
-                               , ", Algorithm=HmacSHA256, Signature="
-                               , signature credentials HmacSHA256 stringToSign
-                               ]
+      amzHeaders    = catMaybes
+                    [ Just ("X-Amzn-Authorization", authorization)
+                    , ("x-amz-security-token",) `fmap` iamToken credentials
+                    ]
+      authorization = B.concat
+                    [ "AWS3-HTTPS AWSAccessKeyId="
+                    , accessKeyId
+                    , ", Algorithm=HmacSHA256, Signature="
+                    , signature credentials HmacSHA256 stringToSign
+                    ]
       query' = ("AWSAccessKeyId", accessKeyId) : query
 
 sesResponseConsumer :: (Cu.Cursor -> Response SesMetadata a)
@@ -128,7 +133,7 @@ sesResponseConsumer inner metadataRef resp = xmlCursorConsumer parse metadataRef
       fromError cursor = do
         errCode    <- force "Missing Error Code"    $ cursor $// elContent "Code"
         errMessage <- force "Missing Error Message" $ cursor $// elContent "Message"
-        F.failure $ SesError (HTTP.responseStatus resp) errCode errMessage
+        throwM $ SesError (HTTP.responseStatus resp) errCode errMessage
 
 class SesAsQuery a where
     -- | Write a data type as a list of query parameters.
